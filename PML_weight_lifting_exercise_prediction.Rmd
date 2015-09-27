@@ -1,0 +1,239 @@
+---
+title: "PML_weight_lifting_exercise_prediction"
+author: "ADROIT KIM"
+date: "September 26, 2015"
+output: html_document
+---
+```{r global_options, include=FALSE}
+knitr::opts_chunk$set(fig.width=18, fig.height=10, fig.path='Figs/',
+                       warning=FALSE, message=FALSE, cache = TRUE)
+```
+
+
+##Authors of the original work and Source of the Data. 
+
+
+The training data for this project are available here: 
+[https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv)
+
+The test data are available here: 
+[https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv)
+
+The data for this project come from this source: [http://groupware.les.inf.puc-rio.br/har](http://groupware.les.inf.puc-rio.br/har). 
+
+The authors and original paper are:
+__Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. Qualitative Activity Recognition of Weight Lifting Exercises. Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13) . Stuttgart, Germany: ACM SIGCHI, 2013.__
+
+Read more: http://groupware.les.inf.puc-rio.br/har#ixzz3mnPgZVzi
+
+
+
+###1.explore the data.
+
+Let's read training and testing data.
+```{r read orig dataset}
+trainingOrig <- read.csv("./pml-training.csv", row.names = 1, na.strings = c("",NA))
+testingOrig <- read.csv("./pml-testing.csv", row.names = 1, na.strings = c("",NA))
+```
+
+Let's check the dimensions of both training and testing set.
+```{r}
+dim(trainingOrig)
+dim(testingOrig)
+```
+same number of columns. I was expecting testing set to have 1 less column, namely, "classe" variable, the one we are trying to predict.
+Let's check whether column names are same for both datasets.
+```{r}
+names(trainingOrig) %in% names(testingOrig)
+names(testingOrig) %in% names(trainingOrig)
+names(trainingOrig[159])
+names(testingOrig[159])
+```
+It shows that the last column of both datasets are different. training set has "classe" variable that test set do not have, unsurprisingly. testing set has "problem_id" variable that training set do not have. "problem_id" variable is for submitting answers to course website. We can ignore it for now.
+
+We now examine the training dataset. 
+```{r}
+summary(trainingOrig)
+```
+summary shows there are many variables composed of mostly NA values. There variables are nearly useless in our model. Not only becuase they are mostly NA filled but also many of them are irrelevant variables to begin with.
+
+###2.clean and split the data.
+
+Let's examine training set with regard to NA values.
+```{r}
+sum(is.na(trainingOrig)) # there are 1921600 NA values total in training set.
+na_count <-sapply(trainingOrig, function(y) sum(is.na(y)))
+min(na_count[na_count > 1])
+max(na_count[na_count > 1])
+```
+It shows there are 1921600 NA values total in training set, and interestingly, variable have either no NA values or exactly 19216 NA values.
+
+
+Let's check the number of NA values in each column, and discard any column with most of its values are NA. 
+```{r}
+excludeVar <- names(trainingOrig) %in% names(na_count[na_count >10000]) # column names with more than 10000 NA values
+trainingNoNA <- trainingOrig[!excludeVar]
+rm(excludeVar, na_count)
+```
+
+We have reduced the number of variables from 159 to 59 and the number of NA values from 1921600 to 0.
+```{r}
+dim(trainingNoNA)
+names(trainingNoNA)
+sum(is.na(trainingNoNA))
+```
+Some peers in discussion board argue that we should exclude more variables, such as, "user_name", but I think each user may have distinct exercise pattern and since training set and testing set have same users, I will not exclude such variables.
+```{r}
+levels(trainingOrig$user_name)
+levels(testingOrig$user_name)
+```
+
+Now we split "trainingNoNA" into "training" and "testing" dataset. Based on "classe" variable, 70% of "trainingNoNA" will be in "training" dataset and 30% in "testing" dataset. This "testing" dataset will serve as the validation dataset
+```{r}
+library(caret)
+set.seed(12345)
+inTrain <- createDataPartition(y = trainingNoNA$classe, p = 0.7, list = F)
+training <- trainingNoNA[inTrain,]
+testing <- trainingNoNA[-inTrain,]
+dim(training);dim(testing)
+rm(inTrain)
+```
+
+
+
+###3.train the models.
+
+To hopefully speed up model building, I will use doParallel package.
+```{r doParallel}
+library(doParallel)
+registerDoParallel()
+```
+
+####3-1.Classification and Regression Trees with Cross Validation
+
+The first technique we will try is Classification and Regression Trees with 10 folds cross validation.
+```{r CART with cv}
+library(caret); library(e1071); library(rpart); library(rpart.plot)
+
+# Define cross-validation experiment
+numFolds = trainControl( method = "cv", number = 10) # cross validation with 10 folds
+cpGrid = expand.grid( .cp = seq(0.01,0.5,0.01)) 
+
+# Perform the cross validation
+train(classe ~ ., data = training, method = "rpart", trControl = numFolds, tuneGrid = cpGrid)
+rm(numFolds, cpGrid)
+```
+It shows cp = 0.01 gives highest accuracy, 0.9181758. This is the cp value we want to use in our CART model. I expect out of sample error to be $1 - 0.9181758 \approx 0.08$. 
+
+
+```{r CART with cv 2}
+# Create a new CART model
+modelCART <- rpart(classe ~ ., data = training, method="class", cp = 0.01)
+prp(modelCART)
+
+# Make predictions
+predictCART = predict(modelCART, newdata = testing, type = "class") 
+confusionMatrix(data = predictCART, reference = testing$classe)
+```
+Making prediction on our validation set, "testing", came to be little less optimistic in terms of accuracy. Out of sample error to be $1 - 0.8724 \approx 0.13$. 
+Let's make prediction on the original test set.
+```{r}
+# Make prediction on "testingOrig", the original testing data set.
+predictionCART <- predict(modelCART, newdata = testingOrig, type = "class")
+predictionCART
+```
+Using CART model, we predict the "classe" variable of the original testing dataset to be
+
+> __`r paste0(predictionCART)`.__
+
+***
+
+####3-2.Random Forest
+Let's do similar prediction using Random Forest. Random Forest does not need cross-validation, so we won't use 10 folds cv this time.
+```{r random forest}
+library(randomForest)
+
+# Build random forest model
+modelRF = randomForest(classe ~ ., data = training)
+
+# Make predictions
+predictRF = predict(modelRF, newdata = testing)
+confusionMatrix(data = predictRF,reference = testing$classe)
+rm(predictRF)
+```
+I expect out of sample error from Random Forest model to be $1 - 0.9988 \approx 0.0012$ which is pretty good improvement over previous one from CART model.
+
+Unfortunately, random Forest gives the error if variables in training and testing dataset are different.
+I will first get rid of all columns in "testingOrig" which are not in "training" dataset, and assign it to "testingRF". Then, rbind "training" and "testingRF" into "whole"", then subset out "testingRF". This way, I can sync variables of both datasets.
+```{r random forest 2}
+# Make real prediction on "testingOrig"" data set.
+includeVar <- names(testingOrig) %in% names(training) # columns of "testingOrig"", also in "training".
+testingRF <- testingOrig[includeVar]
+testingRF$classe <- NA # make "classe" column filled with NA values
+whole <- rbind(training, testingRF)
+testingRF <- subset(whole, is.na(classe))
+rm(includeVar, whole)
+predictionRF <- predict(modelRF, newdata = testingRF)
+predictionRF
+```
+Using Random Forest model, we predict the "classe" variable of the original testing dataset to be
+
+> __`r paste0(predictionRF)`.__ 
+
+Notice our prediction is slightly different from the one using CART model.
+
+***
+
+####3-3.Generalized Boosted Regression Modeling
+
+Finally, let's try out Generalized Boosted Regression Modeling with 10 fold cross validation and see if we get different result from previous methods.
+```{r Generalized Boosted Regression Modeling, results= "hide"}
+# Make sure to do doParellel(). Really slow!!!!!!
+modelGBM <- train(classe ~ ., data = training, method = "gbm", 
+                  trControl = trainControl( method = "cv", number = 10), verbose = FALSE)
+```
+$1 - 0.9962875 \approx 0.004$ out of sample error is expected according to the optimal model.
+```{r Generalized Boosted Regression Modeling 2}
+# Make predictions
+confusionMatrix(data = predict(modelGBM, newdata = testing),reference = testing$classe) 
+```
+Making prediction on validation set yields $1 - 0.9951 \approx 0.005$ expected out of sample error. Little bit higher than one from 10-fold cross validation, but still really small.
+```{r Generalized Boosted Regression Modeling 3}
+# Make prediction on "testingOrig", the original testing data set.
+predictionGBM <- predict(modelGBM, newdata = testingOrig)  
+predictionGBM
+
+stopImplicitCluster()
+```
+
+Using Generalized Boosted Regression Modeling with 10-fold cross validation, we predict the "classe" variable of the original testing dataset to be
+
+> __`r paste0(predictionGBM)`.__ 
+
+Notice our prediction is same with the one using Random Forest.
+
+
+###4.conclusion
+Given that I've got two different answer sets worries me. But luckily I have two chances to check whether my answer is right or wrong. Since our predictions using Random Forest and Generalized Boosted Regression Modeling are same, it will be my first choice.
+It turns out both random forest and gbm models predicted correctly, while CART model did not. Not surprising since the expected out of sample error from CART model was nearly 0.13 while one from other models were less than 0.005.
+
+```{r LogicBoost, echo= F}
+# # removed all factor columns.
+# Data <- exerciseTrain[,-c(1,4,5,59)]
+# model <- LogitBoost(xlearn = Data, ylearn = exerciseTrain[,59], nIter = 20)
+# predict(model,Data)
+# predict(model, newTesting[,-c(1,4,5,59)])
+```
+
+
+```{r submission file, echo= F}
+# pml_write_files = function(x){
+#   n = length(x)
+#   for(i in 1:n){
+#     filename = paste0("problem_id_",i,".txt")
+#     write.table(x[i],file=filename,quote=FALSE,row.names=FALSE,col.names=FALSE)
+#   }
+# }
+
+# pml_write_files(as.character(predictionGBM)) # Correct
+```
